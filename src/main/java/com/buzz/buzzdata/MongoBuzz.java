@@ -6,15 +6,34 @@
 package com.buzz.buzzdata;
 
 import com.mongodb.BasicDBObject;
+import com.mongodb.Bytes;
 import com.mongodb.DB;
 import com.mongodb.DBCollection;
 import com.mongodb.DBCursor;
+import com.mongodb.DBObject;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
+import com.mongodb.gridfs.GridFS;
+import com.mongodb.gridfs.GridFSDBFile;
+import com.mongodb.gridfs.GridFSInputFile;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.StringWriter;
 import java.net.UnknownHostException;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.net.ftp.FTPClient;
+import org.bson.types.ObjectId;
+
+
 
 /**
  *
@@ -38,7 +57,7 @@ public class MongoBuzz implements IBuzzDB {
     private DB mongoDB;
     
     @Override
-    public void Insert(String userid, String header, String content, Double lat, Double lng, String tags) {
+    public void Insert(String userid, String header, String content, Double lat, Double lng, String tags, String[] files) {
         BasicDBObject document = new BasicDBObject();
         document.put("userid", userid);
         document.put("header", header);
@@ -47,9 +66,33 @@ public class MongoBuzz implements IBuzzDB {
         document.put("created", (new Date()));
         document.put("modified", (new Date()));
         document.put("loc",(new double[]{lat,lng }));
-        
+        document.put("FilesCount", files.length);
         DBCollection coll = mongoDB.getCollection("BuzzInfo");
         coll.insert(document);
+        ObjectId buzz_id = (ObjectId)document.get( "_id" );
+        int i = 0;
+        for(String file:files)
+        {
+            try {
+                GridFS gridFS = new GridFS(mongoDB);
+                InputStream file_stream = getFTPInputStream(file);
+                String caption_filename = FilenameUtils.removeExtension(file)+"_caption.txt";
+                InputStream caption_stream = getFTPInputStream(caption_filename);
+                StringWriter writer = new StringWriter();
+                Charset par = null;
+                IOUtils.copy(caption_stream, writer, par);
+                String caption = writer.toString();
+                GridFSInputFile in = gridFS.createFile(file_stream);
+                in.setFilename(file);
+                in.put("BuzzID", buzz_id);
+                in.put("Caption", caption);
+                in.put("PicNum", i);
+                in.save();
+            } catch (IOException ex) {
+                Logger.getLogger(MongoBuzz.class.getName()).log(Level.SEVERE, null, ex);
+            }
+            i++;
+        }
     }
 
     @Override
@@ -98,6 +141,63 @@ public class MongoBuzz implements IBuzzDB {
         return retval;
     }
     
+    @Override
+    public InputStream GetImgByBuzz(String buzz_id, int pic_num)
+    {
+        InputStream retval = null;
+        GridFS gridFS = new GridFS(mongoDB);
+        ObjectId _id = new ObjectId(buzz_id);
+        BasicDBObject buzz_query = new BasicDBObject("BuzzID",_id);
+        GridFSDBFile file =null;
+        List<GridFSDBFile> files = gridFS.find(buzz_query);
+        for(GridFSDBFile file_buzz:files)
+        {
+            if((int)file_buzz.get("PicNum") == pic_num)
+            {
+                file = file_buzz;
+            }
+        }
+        retval = file.getInputStream();
+        return retval;
+    }
+    
+    private InputStream getFTPInputStream(String ftp_location)
+    {
+        InputStream retval = null;
+            
+        String server = "162.219.245.33";
+        int port = 21;
+        String user = "jelastic-ftp";
+        String pass = "jdi8cQkeJZ";
+        FTPClient ftpClient = new FTPClient();
+        
+        try 
+        {
+            ftpClient.connect(server, port);
+            ftpClient.login(user, pass);
+            ftpClient.enterLocalPassiveMode();
+            ftpClient.setFileType(org.apache.commons.net.ftp.FTP.BINARY_FILE_TYPE);
+            retval = ftpClient.retrieveFileStream(ftp_location);
+        } catch (IOException ex) {
+            Logger.getLogger(MongoBuzz.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        finally 
+        {
+            try 
+            {
+                if (ftpClient.isConnected()) {
+                    //ftpClient.logout();
+                    ftpClient.disconnect();
+                }
+            } 
+            catch (IOException ex) 
+            {
+                Logger.getLogger(MongoBuzz.class.getName()).log(Level.SEVERE, null, ex);
+            }
+        }
+        return retval;
+    }
+    
     private String executeQuery(BasicDBObject query, String collName)
     {
         String retval = "";
@@ -105,7 +205,13 @@ public class MongoBuzz implements IBuzzDB {
         DBCursor cursor = buzzCollection.find(query);
         try {
                 while(cursor.hasNext()) {
-                    retval += cursor.next();
+                    //get buzzid
+                    DBObject buzz_obj = cursor.next();
+                    ObjectId buzz_id =  (ObjectId) buzz_obj.get("_id");
+                    //get images for buzzid
+                    //remove last curly brace
+                    //add link to response
+                    retval += buzz_obj;
                     retval += "\n";
                 }
             } 
