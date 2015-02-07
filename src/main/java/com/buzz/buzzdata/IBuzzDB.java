@@ -18,6 +18,7 @@ import org.bson.types.ObjectId;
  */
 public interface IBuzzDB {
     public void Insert(String userid, String header, String content, Double lat, Double lng, String tags, String[] files);
+    public void Insert(BuzzInfo buzz);
     public String SearchByLocation(Double lat, Double lng, Double distance,DistanceUnits units,  String tags);
     public String SearchByUserID(String userid, String tags);
     public String SearchByUserIDLocation(Double lat, Double lng, Double distance, DistanceUnits units, String userid, String tags);

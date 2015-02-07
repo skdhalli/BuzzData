@@ -5,6 +5,7 @@
  */
 package com.buzz.buzzdata;
 
+import com.mongodb.BasicDBList;
 import com.mongodb.BasicDBObject;
 import com.mongodb.Bytes;
 import com.mongodb.DB;
@@ -43,8 +44,8 @@ public class MongoBuzz implements IBuzzDB {
 
     public MongoBuzz(String host, int port, String db, String userName, String passwd) throws UnknownHostException
     {
-        MongoCredential credential = MongoCredential.createMongoCRCredential(userName, "admin", passwd.toCharArray());
-        MongoClient mongoClient = new MongoClient(new ServerAddress(host, port), Arrays.asList(credential));
+        MongoCredential credential = MongoCredential.createMongoCRCredential(userName, db, passwd.toCharArray());
+        mongoClient = new MongoClient(new ServerAddress(host, port), Arrays.asList(credential));
         mongoDB = mongoClient.getDB(db);
     }
     
@@ -65,7 +66,11 @@ public class MongoBuzz implements IBuzzDB {
         document.put("tags", tags.split(","));
         document.put("created", (new Date()));
         document.put("modified", (new Date()));
-        document.put("loc",(new double[]{lat,lng }));
+        BasicDBObject lng_obj = new BasicDBObject();
+        lng_obj.put("lng", lng);
+        BasicDBObject lat_obj = new BasicDBObject();
+        lat_obj.put("lat", lat);
+        document.put("loc",(new Double[]{lng,lat }));
         document.put("FilesCount", files.length);
         DBCollection coll = mongoDB.getCollection("BuzzInfo");
         coll.insert(document);
@@ -100,17 +105,21 @@ public class MongoBuzz implements IBuzzDB {
         String retval = "";
         DBCollection buzzCollection = mongoDB.getCollection("BuzzInfo");
         double distance_radians = 0;
+        
         switch(units)
         {
             case miles:
-                distance_radians = distance/3959;
+                distance_radians = distance/3959.00;
                 break;
             case kilometers:
-                distance_radians = distance/6371;
+                distance_radians = distance/6371.00;
                 break;
         }
-        BasicDBObject query = new BasicDBObject("loc",new BasicDBObject("$geoWithin",new BasicDBObject("$center",new Object[]{(new double[]{lat,lng}), distance_radians})));
-        retval = this.executeQuery(query, "BuzzInfo");
+        BasicDBObject filter = new BasicDBObject("$near",new double[]{lng, lat});
+        filter.put("$maxDistance", distance_radians);
+        
+        BasicDBObject query = new BasicDBObject("loc",filter);
+        retval = this.getBuzz(query, lat, lng);
         return retval;
     }
 
@@ -118,7 +127,7 @@ public class MongoBuzz implements IBuzzDB {
     public String SearchByUserID(String userid, String tags) {
         String retval = "";
         BasicDBObject query = new BasicDBObject("userid",userid);
-        retval = this.executeQuery(query, "BuzzInfo");
+        retval = this.getBuzz(query,0.0,0.0);
         return retval;
     }
 
@@ -165,10 +174,10 @@ public class MongoBuzz implements IBuzzDB {
     {
         InputStream retval = null;
             
-        String server = "162.219.245.33";
+        String server = "162.219.245.61";
         int port = 21;
         String user = "jelastic-ftp";
-        String pass = "jdi8cQkeJZ";
+        String pass = "HeZCHxeefB";
         FTPClient ftpClient = new FTPClient();
         
         try 
@@ -186,7 +195,6 @@ public class MongoBuzz implements IBuzzDB {
             try 
             {
                 if (ftpClient.isConnected()) {
-                    //ftpClient.logout();
                     ftpClient.disconnect();
                 }
             } 
@@ -198,29 +206,84 @@ public class MongoBuzz implements IBuzzDB {
         return retval;
     }
     
-    private String executeQuery(BasicDBObject query, String collName)
+    private String getBuzz(BasicDBObject query, Double lat, Double lng)
     {
         String retval = "";
-        DBCollection buzzCollection = mongoDB.getCollection(collName);
-        DBCursor cursor = buzzCollection.find(query);
-        try {
-                while(cursor.hasNext()) {
-                    //get buzzid
-                    DBObject buzz_obj = cursor.next();
-                    ObjectId buzz_id =  (ObjectId) buzz_obj.get("_id");
-                    //get images for buzzid
-                    //remove last curly brace
-                    //add link to response
-                    retval += buzz_obj;
-                    retval += "\n";
-                }
-            } 
-        finally 
+        DBCollection buzzCollection = mongoDB.getCollection("BuzzInfo");
+        DBObject sort = new BasicDBObject();
+        sort.put("modified", -1);
+        DBCursor cursor = buzzCollection.find(query).sort(sort);
+        try 
+        {
+            while(cursor.hasNext()) 
             {
-                cursor.close();
+                //get buzzid
+                DBObject buzz_obj = cursor.next();
+                ObjectId buzz_id =  (ObjectId) buzz_obj.get("_id");
+                //get images for buzzid
+                GridFS gridFS = new GridFS(mongoDB);
+                BasicDBObject check_images = new BasicDBObject("BuzzID", buzz_id);
+                List<GridFSDBFile> dbfiles = gridFS.find(check_images);
+                String image_links = "";
+                for(GridFSDBFile file:dbfiles)
+                {
+                    String _buzz_id = buzz_id.toString();
+                    String pic_num = file.get("PicNum").toString();
+                    
+                    if(!image_links.equals(""))
+                    {    
+                       image_links += ",http://192.168.0.11:8080/BuzzRestAPI/webresources/buzz/Image?buzzid="+_buzz_id+"&pic_num="+pic_num;
+                    }
+                    else
+                    {
+                        image_links += "http://192.168.0.11:8080/BuzzRestAPI/webresources/buzz/Image?buzzid="+_buzz_id+"&pic_num="+pic_num;
+                    }
+                }
+                String imgs = "\"Images\": "+"\""+image_links+"\"";
+                retval += buzz_obj;
+                retval = retval.substring(0, retval.length()-1);
+                retval += ", "+imgs;
+                double lat2 =(double)((BasicDBList)buzz_obj.get("loc")).get(0);
+                double lng2 = (double)((BasicDBList)buzz_obj.get("loc")).get(1);
+                double dist = this.haversine(lat, lng, lat2, lng2);
+                retval += ", \"Distance\": "+dist;
+                String directions_url = "https://maps.google.com/maps?saddr="+lat+","+lng+"&daddr="+lat2+","+lng2+"&hl=en&sll="+lat+","+lng+"&sspn="+lat2+","+lng2+"&t=m&mra=mift&mrsp=1&sz=5&z=18";
+                retval += ", \"Directions\": \""+directions_url+"\"";
+                retval += "},";
             }
+        }
+        catch(Exception exc)
+        {}
+        finally 
+        {
+            cursor.close();
+        }
+        retval = retval.substring(0, retval.length()-1);
+        retval = "callback({\"Buzzes\": ["+retval+"]})";
         return retval;
     }
+    
+    
+    public double haversine(
+        double lat1, double lng1, double lat2, double lng2) {
+    double r = 6371/1.6; // average radius of the earth in miles
+    double dLat = Math.toRadians(lat2 - lat1);
+    double dLon = Math.toRadians(lng2 - lng1);
+    double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+       Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) 
+      * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    double d = r * c;
+    return round(d,1);
+}
+    double round(double value, int places) {
+    if (places < 0) throw new IllegalArgumentException();
+
+    long factor = (long) Math.pow(10, places);
+    value = value * factor;
+    long tmp = Math.round(value);
+    return (double) tmp / factor;
+}
     
     private String executeQueries(BasicDBObject[] queries, String combine, String collName)
     {
@@ -239,5 +302,10 @@ public class MongoBuzz implements IBuzzDB {
                 cursor.close();
             }
         return retval;
+    }
+
+    @Override
+    public void Insert(BuzzInfo buzz) {
+        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
     }
 }
